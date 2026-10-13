@@ -8,3 +8,6 @@ Find the script that you need for your problem easier
 - **snap a messy vertex selection onto the smooth shape that best fits it.** Least-squares smooth curve (polynomial), best-fit circle (arc), or a polynomial height field over the patch's own plane. Built in logic to help you choose which is most applicable - or experiment, and fine-tune any of the above options
 - Smooth a bounded messy selection (like loop tools) to be equidistant as Blender intended
 - Smooth an unbounded selection/blemish on a surface to make the area smoother more broadly
+
+![Smooth an edge](figures/bevel_edge_transition.png)
+![Smooth a vertex](figures/bevel_vertex_transition.png)
