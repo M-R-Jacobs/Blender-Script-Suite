@@ -1,10 +1,23 @@
 """
 README:
 snap a messy selection onto the smooth shape that best fits it.
-(Blender, Edit Mode, run from the Text Editor. Works on the ACTIVE shape 
+(Blender, Edit Mode, run from the Text Editor. Works on the ACTIVE shape
 key, Basis it reshapes the mesh, on a key it reshapes that key.)
 
-SHAPE = "auto" picks one of the below for you
+MODE picks the job:
+  "shape"     lines and edges (also rings / strips): snap onto a clean
+              curve, circle or surface (see SHAPE below)
+  "untangle"  bound messes: crumpled / crossed grids. Fits a surface through
+              the selection, then slides each vert toward the middle of its
+              neighbours while staying on it (RELAX), so the grid evens out.
+              Border verts can stay put (PIN_EDGE).
+              Select the mess plus a ring of good verts around it.
+  "heal"      flatten and smooth generally: bevel pimples, dents, lumps.
+              Select ONLY the bump. The surface is fitted to the untouched
+              verts AROUND it (HEAL_RINGS) and the bump is pressed back onto
+              it (and evened out with RELAX). Nothing outside moves.
+
+SHAPE (for MODE = "shape") = "auto" picks one of the below for you
   "curve"   selection is a path of verts (an edge loop / a bevel row):
             least-squares smooth curve through them, by arc length.
             Closed loops get a closed curve (low Fourier terms), open paths a
@@ -16,25 +29,28 @@ SHAPE = "auto" picks one of the below for you
 Knobs:
   SMOOTH    curve: how many bends it may have (open: polynomial degree 2-5,
             closed: harmonics 1-4). Lower = smoother.
-  DEGREE    surface: 2 = dome / saddle, 3 = one more wiggle.
+  DEGREE    surface / untangle / heal: 1 = flat plane, 2 = dome / saddle,
+            3 = one more wiggle.
   STRENGTH  1 = all the way onto the fit, 0.5 = halfway.
   EVEN      curve / circle: also respace the verts evenly along it.
-  RELAX     surface: also UNTANGLE - slides each vert toward the middle of
-            its neighbours while staying on the fitted surface, so crumpled /
-            crossed grids even out. Border verts stay put (PIN_EDGE).
-            Select the mess plus a ring of good verts around it.
+  RELAX     untangle / heal: evening-out passes (0 = only snap onto the surface).
+  PIN_EDGE  untangle: border verts stay put (False = they flatten too).
+  HEAL_RINGS heal: rings of untouched verts around the bump that define the surface.
 """
 import bpy, bmesh, math
 import numpy as np
 
-SHAPE = "auto"      # "auto", "curve", "circle", "surface"
+MODE = "shape"      # "shape", "untangle", "heal"
+SHAPE = "auto"      # shape mode: "auto", "curve", "circle", "surface"
+
 SMOOTH = 3          # 1-5, how many bends a curve may have (lower = smoother)
-DEGREE = 2          # polynomial fit
+DEGREE = 2          # polynomial fit: 1 = flat, 2 = dome / saddle, 3 = one more wiggle
 STRENGTH = 1.0      # 0.0 = no fit, 1.0 = all the way onto the fit
 EVEN = False
 KEEP_ENDS = True    # If False, consider using the native Vertex Smooth function
-RELAX = 30            # surface: untangle passes (0 = only flatten onto the surface). Fixes crumpled / crossed grids
-PIN_EDGE = True       # surface: verts on the selection's border stay put (blends into the rest)
+RELAX = 30          # untangle / heal: evening-out passes (0 = only snap onto the surface)
+PIN_EDGE = True     # untangle: verts on the selection's border stay put (blends into the rest)
+HEAL_RINGS = 3      # heal: rings of UNselected verts around the bump that describe the surface
 
 ob = bpy.context.active_object
 assert ob and ob.type == 'MESH' and ob.mode == 'EDIT', "Edit Mode on the mesh, verts selected"
@@ -126,10 +142,10 @@ def surface_fn(P):
     return lambda X: X + np.outer(A(X) @ C - (X - c0) @ n, n)
 
 
-def fit_surface(P, verts):
+def fit_surface(P, verts, relax):
     proj = surface_fn(P)
     Q = proj(P)
-    if RELAX <= 0:
+    if relax <= 0:
         return Q
     # untangle: slide verts toward the middle of their neighbours, staying on the surface.
     # Verts on the selection's edge (touching unselected verts) stay put, so it blends in.
@@ -138,7 +154,7 @@ def fit_surface(P, verts):
     pinned = np.array([any(w not in S for w in nb) for nb in nbr]) if PIN_EDGE else np.zeros(len(verts), bool)
     fixed_pos = {w: np.array(w.co[:]) for nb in nbr for w in nb if w not in idx}
     X = np.where(pinned[:, None], P, Q)
-    for _ in range(RELAX):
+    for _ in range(relax):
         avg = np.array([np.mean([X[idx[w]] if w in idx else fixed_pos[w] for w in nb], axis=0) if nb else X[i]
                         for i, nb in enumerate(nbr)])
         Y = proj(X + (avg - X) * 0.5)
@@ -146,17 +162,46 @@ def fit_surface(P, verts):
     return X
 
 
+def heal(verts, P):
+    """Fit the surface to the untouched ring around the bump, press the bump onto it."""
+    ring, frontier, seen = [], set(verts), set(verts)
+    for _ in range(HEAL_RINGS):
+        nxt = set()
+        for v in frontier:
+            for e in v.link_edges:
+                w = e.other_vert(v)
+                if w not in seen and w not in S: seen.add(w); nxt.add(w); ring.append(w)
+        frontier = nxt
+    assert len(ring) >= 6, "heal: not enough untouched verts around the selection"
+    proj = surface_fn(np.array([w.co[:] for w in ring]))
+    X = proj(P)
+    if RELAX > 0:   # even out the healed verts, staying on the surface; the ring stays put
+        idx = {v: i for i, v in enumerate(verts)}
+        nbr = [[e.other_vert(v) for e in v.link_edges] for v in verts]
+        for _ in range(RELAX):
+            avg = np.array([np.mean([X[idx[w]] if w in idx else np.array(w.co[:]) for w in nb], axis=0) for nb in nbr])
+            X = proj(X + (avg - X) * 0.5)
+    return X
+
+
+assert MODE in ("shape", "untangle", "heal"), f"MODE '{MODE}'? use shape / untangle / heal"
 moved = 0
 for verts, is_path, closed in paths():
     P = np.array([v.co[:] for v in verts])
-    kind = SHAPE if SHAPE != "auto" else ("curve" if is_path else "surface")
-    if kind in ("curve", "circle") and not is_path:
-        print(f"  skipped a piece of {len(verts)} verts: not a single path (use surface)"); continue
-    Q = fit_curve(P, closed) if kind == "curve" else fit_circle(P, closed) if kind == "circle" else fit_surface(P, verts)
+    if MODE == "heal":
+        kind, Q = "heal", heal(verts, P)
+    elif MODE == "untangle":
+        kind, Q = "untangle", fit_surface(P, verts, RELAX)
+    else:
+        kind = SHAPE if SHAPE != "auto" else ("curve" if is_path else "surface")
+        if kind in ("curve", "circle") and not is_path:
+            print(f"  skipped a piece of {len(verts)} verts: not a single path (use surface)"); continue
+        Q = fit_curve(P, closed) if kind == "curve" else fit_circle(P, closed) if kind == "circle" else fit_surface(P, verts, 0)
     for v, p, q in zip(verts, P, Q):
         v.co = p + (q - p) * STRENGTH
     moved += len(verts)
     print(f"  {kind}{' (closed)' if closed else ''}: {len(verts)} verts, max move {np.linalg.norm(Q - P, axis=1).max() * STRENGTH:.4f}")
 
 bmesh.update_edit_mesh(ob.data)
-print(f"fit_verts: {moved} verts fitted")
+key = ob.active_shape_key.name if ob.active_shape_key else "mesh"
+print(f"fit_verts ({MODE}): {moved} verts fitted on '{key}'")
