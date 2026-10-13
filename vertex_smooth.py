@@ -19,6 +19,10 @@ Knobs:
   DEGREE    surface: 2 = dome / saddle, 3 = one more wiggle.
   STRENGTH  1 = all the way onto the fit, 0.5 = halfway.
   EVEN      curve / circle: also respace the verts evenly along it.
+  RELAX     surface: also UNTANGLE - slides each vert toward the middle of
+            its neighbours while staying on the fitted surface, so crumpled /
+            crossed grids even out. Border verts stay put (PIN_EDGE).
+            Select the mess plus a ring of good verts around it.
 """
 import bpy, bmesh, math
 import numpy as np
@@ -29,6 +33,8 @@ DEGREE = 2          # polynomial fit
 STRENGTH = 1.0      # 0.0 = no fit, 1.0 = all the way onto the fit
 EVEN = False
 KEEP_ENDS = True    # If False, consider using the native Vertex Smooth function
+RELAX = 30            # surface: untangle passes (0 = only flatten onto the surface). Fixes crumpled / crossed grids
+PIN_EDGE = True       # surface: verts on the selection's border stay put (blends into the rest)
 
 ob = bpy.context.active_object
 assert ob and ob.type == 'MESH' and ob.mode == 'EDIT', "Edit Mode on the mesh, verts selected"
@@ -105,16 +111,39 @@ def fit_circle(P, closed):
     return Q
 
 
-def fit_surface(P):
+def surface_fn(P):
+    """Best-fit smooth surface; returns a function that drops points onto it."""
     c0 = P.mean(0); U, s, Vt = np.linalg.svd(P - c0)
     e1, e2, n = Vt[0], Vt[1], Vt[2]
-    u, v, h = (P - c0) @ e1, (P - c0) @ e2, (P - c0) @ n
-    sc = max(np.abs(u).max(), np.abs(v).max(), 1e-9); u, v = u / sc, v / sc
+    u, v = (P - c0) @ e1, (P - c0) @ e2
+    sc = max(np.abs(u).max(), np.abs(v).max(), 1e-9)
     terms = [(i, j) for i in range(DEGREE + 1) for j in range(DEGREE + 1 - i)]
     while len(terms) > len(P): terms.pop()
-    A = np.column_stack([u ** i * v ** j for i, j in terms])
-    C, *_ = np.linalg.lstsq(A, h, rcond=None)
-    return P + np.outer(A @ C - h, n)
+    def A(X):
+        uu, vv = ((X - c0) @ e1) / sc, ((X - c0) @ e2) / sc
+        return np.column_stack([uu ** i * vv ** j for i, j in terms])
+    C, *_ = np.linalg.lstsq(A(P), (P - c0) @ n, rcond=None)
+    return lambda X: X + np.outer(A(X) @ C - (X - c0) @ n, n)
+
+
+def fit_surface(P, verts):
+    proj = surface_fn(P)
+    Q = proj(P)
+    if RELAX <= 0:
+        return Q
+    # untangle: slide verts toward the middle of their neighbours, staying on the surface.
+    # Verts on the selection's edge (touching unselected verts) stay put, so it blends in.
+    idx = {v: i for i, v in enumerate(verts)}
+    nbr = [[w for w in (e.other_vert(v) for e in v.link_edges)] for v in verts]
+    pinned = np.array([any(w not in S for w in nb) for nb in nbr]) if PIN_EDGE else np.zeros(len(verts), bool)
+    fixed_pos = {w: np.array(w.co[:]) for nb in nbr for w in nb if w not in idx}
+    X = np.where(pinned[:, None], P, Q)
+    for _ in range(RELAX):
+        avg = np.array([np.mean([X[idx[w]] if w in idx else fixed_pos[w] for w in nb], axis=0) if nb else X[i]
+                        for i, nb in enumerate(nbr)])
+        Y = proj(X + (avg - X) * 0.5)
+        X = np.where(pinned[:, None], X, Y)
+    return X
 
 
 moved = 0
@@ -123,7 +152,7 @@ for verts, is_path, closed in paths():
     kind = SHAPE if SHAPE != "auto" else ("curve" if is_path else "surface")
     if kind in ("curve", "circle") and not is_path:
         print(f"  skipped a piece of {len(verts)} verts: not a single path (use surface)"); continue
-    Q = fit_curve(P, closed) if kind == "curve" else fit_circle(P, closed) if kind == "circle" else fit_surface(P)
+    Q = fit_curve(P, closed) if kind == "curve" else fit_circle(P, closed) if kind == "circle" else fit_surface(P, verts)
     for v, p, q in zip(verts, P, Q):
         v.co = p + (q - p) * STRENGTH
     moved += len(verts)
