@@ -11,3 +11,7 @@ Find the script that you need for your problem easier
 
 ![Smooth an edge](figures/bevel_edge_transition.png)
 ![Smooth a vertex](figures/bevel_vertex_transition.png)
+
+### vertex_fill
+- connect several verts to ONE vertex (join or fill will not do this)
+- fill the wedges between them in Blender's Edit Mode.
