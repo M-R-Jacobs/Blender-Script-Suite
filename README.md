@@ -15,3 +15,9 @@ Find the script that you need for your problem easier
 ### vertex_fill
 - connect several verts to ONE vertex (join or fill will not do this)
 - fill the wedges between them in Blender's Edit Mode.
+
+### vertex_merge_rungs
+- Merge two rows of verts together, each with the one it's already connected to
+- You need to run Edge -> Bridge Edge Loops first!
+
+![Connect to edges](figures/rung_merge.png)
