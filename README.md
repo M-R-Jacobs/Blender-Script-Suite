@@ -6,6 +6,8 @@ Find the script that you need for your problem easier. Scripts are groups by key
 - keys_ deals with problems affecting Shape Keys
 - vertex_ helps with modeling geometry
 
+---
+
 ### keys_promote_to_basis
 - You modelled on a shape key instead of Basis by accident? Make that shape the new Basis without losing any other key.
 - IMPORTANT: only use this if you are okay with re-modeling the key you promote. All it's data will be wiped and scaling 0-1 will do nothing after running.
