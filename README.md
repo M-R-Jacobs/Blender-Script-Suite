@@ -2,7 +2,9 @@
 Scripts I have developed to help with various problems in Blender that don't have good solutions already built into the program
 
 ## Brief descriptions of the listed scripts
-Find the script that you need for your problem easier
+Find the script that you need for your problem easier. Scripts are groups by keyword, "X_function" where X is the thing that the script primarily operates on
+- keys_ deals with problems affecting Shape Keys
+- vertex_ helps with modeling geometry
 
 ### keys_promote_to_basis
 - You modelled on a shape key instead of Basis by accident? Make that shape the new Basis without losing any other key.
