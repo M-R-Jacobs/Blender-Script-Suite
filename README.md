@@ -4,6 +4,11 @@ Scripts I have developed to help with various problems in Blender that don't hav
 ## Brief descriptions of the listed scripts
 Find the script that you need for your problem easier
 
+### keys_promote_to_basis
+- You modelled on a shape key instead of Basis by accident? Make that shape the new Basis without losing any other key.
+- IMPORTANT: only use this if you are okay with re-modeling the key you promote. All it's data will be wiped and scaling 0-1 will do nothing after running.
+
+
 ### vertex_fill
 - connect several verts to ONE vertex (join or fill will not do this)
 - fill the wedges between them in Blender's Edit Mode.
