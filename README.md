@@ -29,8 +29,10 @@ Find the script that you need for your problem easier. Scripts are groups by key
 
 ### vertex_smooth
 - **snap a messy vertex selection onto the smooth shape that best fits it.** Least-squares smooth curve (polynomial), best-fit circle (arc), or a polynomial height field over the patch's own plane. Built in logic to help you choose which is most applicable - or experiment, and fine-tune any of the above options
-- Smooth a bounded messy selection (like loop tools) to be equidistant as Blender intended
-- Smooth an unbounded selection/blemish on a surface to make the area smoother more broadly
+- **Shape** aligns a row of vertices equidistant along a chosen function
+- **Untangle** smooths a bounded messy selection to be organized as Blender intended WITHIN the bounds you select (found automatically)
+- **Smooth** takes an unbounded selection/blemish on a surface to make the area smoother more broadly (a function similar to loop tools)
+- **corner** helps your truly ruined beveled corners when untangle isn't enough. Maintains the location and size of the cluster of vertices and gently reshapes the edges.
 
 ![Smooth an edge](figures/bevel_edge_transition.png)
 ![Smooth a vertex](figures/bevel_vertex_transition.png)
