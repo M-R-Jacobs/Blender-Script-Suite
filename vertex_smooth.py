@@ -12,10 +12,16 @@ MODE picks the job:
               neighbours while staying on it (RELAX), so the grid evens out.
               Border verts can stay put (PIN_EDGE).
               Select the mess plus a ring of good verts around it.
-  "heal"      flatten and smooth generally: bevel pimples, dents, lumps.
+  "smooth"    flatten and smooth generally: pimples, dents, lumps.
               Select ONLY the bump. The surface is fitted to the untouched
-              verts AROUND it (HEAL_RINGS) and the bump is pressed back onto
+              verts AROUND it (SMOOTH_RINGS) and the bump is pressed back onto
               it (and evened out with RELAX). Nothing outside moves.
+  "corner"    a bevelled vertex (one vert that became a small cluster).
+              Select ONLY the cluster. It becomes a smooth, curved blend that
+              becomes a rounded cap (like a bevel's round profile): a bulge
+              in the centre that meets the edges leaving the cluster smoothly.
+              Size and sideways position never change - only the height off
+              the cluster's rim plane is rebuilt. No knobs.
 
 SHAPE (for MODE = "shape") = "auto" picks one of the below for you
   "curve"   selection is a path of verts (an edge loop / a bevel row):
@@ -29,28 +35,29 @@ SHAPE (for MODE = "shape") = "auto" picks one of the below for you
 Knobs:
   SMOOTH    curve: how many bends it may have (open: polynomial degree 2-5,
             closed: harmonics 1-4). Lower = smoother.
-  DEGREE    surface / untangle / heal: 1 = flat plane, 2 = dome / saddle,
+  DEGREE    surface / untangle / smooth: 1 = flat plane, 2 = dome / saddle,
             3 = one more wiggle.
   STRENGTH  1 = all the way onto the fit, 0.5 = halfway.
-  EVEN      curve / circle: also respace the verts evenly along it.
-  RELAX     untangle / heal: evening-out passes (0 = only snap onto the surface).
+  EVEN      curve / circle: respace the verts equally along the fitted line,
+            measured from the endpoints (default on).
+  RELAX     untangle / smooth: evening-out passes (0 = only snap onto the surface).
   PIN_EDGE  untangle: border verts stay put (False = they flatten too).
-  HEAL_RINGS heal: rings of untouched verts around the bump that define the surface.
+  SMOOTH_RINGS smooth: rings of untouched verts around the bump that define the surface.
 """
 import bpy, bmesh, math
 import numpy as np
 
-MODE = "shape"      # "shape", "untangle", "heal"
+MODE = "untangle"      # "shape", "untangle", "smooth", "corner"
 SHAPE = "auto"      # shape mode: "auto", "curve", "circle", "surface"
 
-SMOOTH = 3          # 1-5, how many bends a curve may have (lower = smoother)
+SMOOTH = 2          # 1-5, how many bends a curve may have (lower = smoother)
 DEGREE = 2          # polynomial fit: 1 = flat, 2 = dome / saddle, 3 = one more wiggle
 STRENGTH = 1.0      # 0.0 = no fit, 1.0 = all the way onto the fit
-EVEN = False
+EVEN = True         # curve / circle: equal spacing along the fitted line (ends stay put on open paths)
 KEEP_ENDS = True    # If False, consider using the native Vertex Smooth function
-RELAX = 30          # untangle / heal: evening-out passes (0 = only snap onto the surface)
+RELAX = 30          # untangle / smooth: evening-out passes (0 = only snap onto the surface)
 PIN_EDGE = True     # untangle: verts on the selection's border stay put (blends into the rest)
-HEAL_RINGS = 3      # heal: rings of UNselected verts around the bump that describe the surface
+SMOOTH_RINGS = 3    # smooth: rings of UNselected verts around the bump that describe the surface
 
 ob = bpy.context.active_object
 assert ob and ob.type == 'MESH' and ob.mode == 'EDIT', "Edit Mode on the mesh, verts selected"
@@ -107,8 +114,18 @@ def fit_curve(P, closed):
     w = np.ones(len(P))
     if KEEP_ENDS and not closed: w[0] = w[-1] = 1e4            # pin the ends
     C, *_ = np.linalg.lstsq(A * w[:, None], P * w[:, None], rcond=None)
-    tt = (np.arange(len(P)) / (len(P) if closed else len(P) - 1)) if EVEN else t
-    return basis(tt) @ C
+    if not EVEN:
+        return basis(t) @ C
+    # EVEN: equal spacing measured along the FITTED curve itself (exact), from the first vert / endpoints
+    dense_t = np.linspace(0.0, 1.0, 2000)
+    D = basis(dense_t) @ C
+    if closed:
+        D = np.vstack([D, D[:1]]); dense_t = np.append(dense_t, 1.0)
+    s_ = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(D, axis=0), axis=1))])
+    want = np.arange(len(P)) * (s_[-1] / len(P)) if closed else np.linspace(0.0, s_[-1], len(P))
+    Q = np.column_stack([np.interp(want, s_, D[:, k]) for k in range(3)])
+    if KEEP_ENDS and not closed: Q[0], Q[-1] = P[0], P[-1]
+    return Q
 
 
 def fit_circle(P, closed):
@@ -127,9 +144,11 @@ def fit_circle(P, closed):
     return Q
 
 
-def surface_fn(P):
-    """Best-fit smooth surface; returns a function that drops points onto it."""
-    c0 = P.mean(0); U, s, Vt = np.linalg.svd(P - c0)
+def surface_fn(P, W=None):
+    """Best-fit smooth surface (optionally weighted per point); returns a function that drops points onto it."""
+    W = np.ones(len(P)) if W is None else np.asarray(W, float)
+    c0 = (P * W[:, None]).sum(0) / W.sum()
+    U, s, Vt = np.linalg.svd((P - c0) * np.sqrt(W)[:, None])
     e1, e2, n = Vt[0], Vt[1], Vt[2]
     u, v = (P - c0) @ e1, (P - c0) @ e2
     sc = max(np.abs(u).max(), np.abs(v).max(), 1e-9)
@@ -138,7 +157,8 @@ def surface_fn(P):
     def A(X):
         uu, vv = ((X - c0) @ e1) / sc, ((X - c0) @ e2) / sc
         return np.column_stack([uu ** i * vv ** j for i, j in terms])
-    C, *_ = np.linalg.lstsq(A(P), (P - c0) @ n, rcond=None)
+    sw = np.sqrt(W)
+    C, *_ = np.linalg.lstsq(A(P) * sw[:, None], ((P - c0) @ n) * sw, rcond=None)
     return lambda X: X + np.outer(A(X) @ C - (X - c0) @ n, n)
 
 
@@ -162,20 +182,20 @@ def fit_surface(P, verts, relax):
     return X
 
 
-def heal(verts, P):
+def smooth(verts, P):
     """Fit the surface to the untouched ring around the bump, press the bump onto it."""
     ring, frontier, seen = [], set(verts), set(verts)
-    for _ in range(HEAL_RINGS):
+    for _ in range(SMOOTH_RINGS):
         nxt = set()
         for v in frontier:
             for e in v.link_edges:
                 w = e.other_vert(v)
                 if w not in seen and w not in S: seen.add(w); nxt.add(w); ring.append(w)
         frontier = nxt
-    assert len(ring) >= 6, "heal: not enough untouched verts around the selection"
+    assert len(ring) >= 6, "smooth: not enough untouched verts around the selection"
     proj = surface_fn(np.array([w.co[:] for w in ring]))
     X = proj(P)
-    if RELAX > 0:   # even out the healed verts, staying on the surface; the ring stays put
+    if RELAX > 0:   # even out the smoothed verts, staying on the surface; the ring stays put
         idx = {v: i for i, v in enumerate(verts)}
         nbr = [[e.other_vert(v) for e in v.link_edges] for v in verts]
         for _ in range(RELAX):
@@ -184,12 +204,55 @@ def heal(verts, P):
     return X
 
 
-assert MODE in ("shape", "untangle", "heal"), f"MODE '{MODE}'? use shape / untangle / heal"
+def corner(verts, P):
+    """Bevel corner -> a rounded cap, like a bevel's round profile.
+    The cluster's outer verts (the ones with an edge leaving the cluster) set a base plane.
+    The edges leaving the cluster set how steeply the cap must meet them; the inside verts
+    are lifted into a spherical cap that meets those edges smoothly - a bulge in the centre.
+    Every vert keeps its place ACROSS the plane (so the size and the sideways position never
+    change); only the height off the plane is rebuilt. Concave corners dip instead of bulge."""
+    idx = {v: i for i, v in enumerate(verts)}
+    outer = [i for i, v in enumerate(verts) if any(e.other_vert(v) not in idx for e in v.link_edges)]
+    assert len(outer) >= 3, "corner: needs at least 3 cluster verts with edges leaving the cluster"
+    B = P[outer]
+    c = B.mean(axis=0)
+    _, _, Vt = np.linalg.svd(B - c)
+    e1, e2, n = Vt[0], Vt[1], Vt[2]
+    # the edges leaving the cluster: which way do they head, and how steeply?
+    dirs = []
+    for i in outer:
+        v = verts[i]
+        for e in v.link_edges:
+            w = e.other_vert(v)
+            if w not in idx:
+                d = np.array(w.co[:]) - P[i]; L = np.linalg.norm(d)
+                if L > 1e-12: dirs.append(d / L)
+    dirs = np.array(dirs)
+    if (dirs @ n).mean() > 0: n = -n                       # n points to the bulge side (away from where the edges go)
+    theta = float(np.clip(np.arcsin(np.clip(-(dirs @ n), -1, 1)).mean(), -1.4, 1.4))   # meeting angle (rad)
+    u, w = (P - c) @ e1, (P - c) @ e2
+    r = np.sqrt(u * u + w * w)
+    a = float(np.linalg.norm(B - c, axis=1).mean())        # cap radius = the cluster's own size
+    h = np.zeros(len(P))
+    if abs(theta) > 1e-4 and a > 1e-12:
+        Rs = a / abs(math.sin(theta))                      # sphere that meets the edges at that angle
+        rr = np.minimum(r, a)
+        h = np.sqrt(np.maximum(Rs * Rs - rr * rr, 0)) - math.sqrt(max(Rs * Rs - a * a, 0))
+        h *= math.copysign(1.0, theta)
+    h[outer] = 0.0                                         # the rim sits on the base plane
+    print(f"    corner: {len(verts)} verts, meets its edges at {math.degrees(theta):.0f} deg, "
+          f"bulge {h.max() if theta >= 0 else h.min():.5f}")
+    return c + np.outer(u, e1) + np.outer(w, e2) + np.outer(h, n)
+
+
+assert MODE in ("shape", "untangle", "smooth", "corner"), f"MODE '{MODE}'? use shape / untangle / smooth / corner"
 moved = 0
 for verts, is_path, closed in paths():
     P = np.array([v.co[:] for v in verts])
-    if MODE == "heal":
-        kind, Q = "heal", heal(verts, P)
+    if MODE == "smooth":
+        kind, Q = "smooth", smooth(verts, P)
+    elif MODE == "corner":
+        kind, Q = "corner", corner(verts, P)
     elif MODE == "untangle":
         kind, Q = "untangle", fit_surface(P, verts, RELAX)
     else:
